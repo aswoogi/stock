@@ -1,4 +1,10 @@
 import streamlit as st
+import sys
+import os
+
+# Add current directory to path to ensure imports work in deployment
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
