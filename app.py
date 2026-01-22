@@ -364,14 +364,54 @@ def predict_direction(df: pd.DataFrame, supports: list, resistances: list) -> di
         "details": details
     }
 
+import json
+import os
+
+# --- PERSISTENCE ---
+WATCHLIST_FILE = "watchlist.json"
+
+def load_watchlist():
+    if os.path.exists(WATCHLIST_FILE):
+        try:
+            with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading watchlist: {e}")
+    # Default initial list
+    return [
+        {"ticker": "005930.KS", "name": "삼성전자"},
+        {"ticker": "AAPL", "name": "Apple Inc."},
+        {"ticker": "TSLA", "name": "Tesla, Inc."},
+        {"ticker": "NVDA", "name": "NVIDIA Corp."}
+    ]
+
+def save_watchlist(watchlist):
+    try:
+        with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(watchlist, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving watchlist: {e}")
+
+# --- HELPER UI FUNCTIONS ---
+def truncate_text(text, max_len=15):
+    if len(text) > max_len:
+        return text[:max_len] + "..."
+    return text
+
 # --- MAIN APPLICATION ---
 
 # Page configuration
 st.set_page_config(layout="wide", page_title="주식 예측 AI", page_icon="📈")
 
-# Custom CSS for styling
+# Custom CSS for styling and responsiveness
 st.markdown("""
 <style>
+    /* Responsive Text Sizes */
+    h1 { font-size: clamp(1.5rem, 4vw, 3rem) !important; }
+    h2 { font-size: clamp(1.2rem, 3vw, 2.2rem) !important; }
+    .stMetricLabel { font-size: clamp(0.8rem, 1.5vw, 1rem) !important; }
+    .stMetricValue { font-size: clamp(1rem, 2.5vw, 1.8rem) !important; }
+    
     .metric-card {
         background-color: #1e1e1e;
         padding: 10px;
@@ -387,6 +427,13 @@ st.markdown("""
     .buy { background-color: rgba(0, 255, 0, 0.1); border: 2px solid #00ff00; }
     .sell { background-color: rgba(255, 0, 0, 0.1); border: 2px solid #ff0000; }
     .neutral { background-color: rgba(255, 255, 255, 0.1); border: 2px solid #ffffff; }
+    
+    /* Button Styling in Sidebar */
+    .stButton button {
+        text-align: left !important;
+        width: 100%;
+        padding-left: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -395,9 +442,9 @@ st.title("📈 AI 주식 예측기")
 
 # --- Initialize Session State for Watchlist ---
 if 'watchlist' not in st.session_state:
-    st.session_state.watchlist = ['005930.KS', 'AAPL', 'TSLA', 'NVDA']
+    st.session_state.watchlist = load_watchlist()
 if 'selected_ticker' not in st.session_state:
-    st.session_state.selected_ticker = '005930.KS'
+    st.session_state.selected_ticker = st.session_state.watchlist[0]['ticker'] if st.session_state.watchlist else "005930.KS"
 
 # --- 1. Market Overview Header ---
 st.subheader("🌍 시장 현황")
@@ -426,28 +473,45 @@ st.sidebar.markdown("""
 """)
 
 # Watchlist Management
-st.sidebar.subheader("📋 관심 종목 (Watchlist)")
+st.sidebar.subheader("📋 관심 종목")
 
 # Add to Watchlist
 new_ticker = st.sidebar.text_input("종목 추가", placeholder="예: BTC-USD")
 if st.sidebar.button("추가"):
-    if new_ticker and new_ticker not in st.session_state.watchlist:
-        st.session_state.watchlist.append(new_ticker)
-        st.rerun()
+    if new_ticker:
+        # Check integrity
+        exists = any(item['ticker'] == new_ticker for item in st.session_state.watchlist)
+        if not exists:
+            # Fetch name first
+            with st.spinner("종목 정보 확인 중..."):
+                fetched_name = get_stock_name(new_ticker)
+                st.session_state.watchlist.append({"ticker": new_ticker, "name": fetched_name})
+                save_watchlist(st.session_state.watchlist)
+                st.rerun()
+        else:
+            st.warning("이미 목록에 있는 종목입니다.")
 
 # Whatchlist Items
 st.sidebar.markdown("---")
 st.sidebar.caption("종목을 클릭하여 분석하세요:")
 
-for ticker in st.session_state.watchlist:
+for item in st.session_state.watchlist:
+    ticker = item['ticker']
+    name = item['name']
+    
+    # Truncate long names for display
+    display_name = truncate_text(name, 12)
+    
     col1, col2 = st.sidebar.columns([0.8, 0.2])
     with col1:
-        if st.button(ticker, key=f"btn_{ticker}", use_container_width=True):
+        # Show name on button, ticker in tooltip/help if possible, but button text is primary
+        if st.button(f"{display_name}", key=f"btn_{ticker}", help=f"{name} ({ticker})", use_container_width=True):
             st.session_state.selected_ticker = ticker
             st.rerun()
     with col2:
         if st.button("❌", key=f"del_{ticker}"):
-            st.session_state.watchlist.remove(ticker)
+            st.session_state.watchlist = [i for i in st.session_state.watchlist if i['ticker'] != ticker]
+            save_watchlist(st.session_state.watchlist)
             st.rerun()
 
 st.sidebar.markdown("---")
@@ -457,10 +521,13 @@ timeframe = st.sidebar.selectbox("기간", ["1y", "2y", "5y"], index=1)
 target_ticker = st.session_state.selected_ticker
 
 if target_ticker:
-    # Fetch Name
+    # Fetch Name (Double check or use saved)
+    # We can rely on get_stock_name since valid watchlist items have names, 
+    # but selected_ticker works with the name fetcher anyway.
     stock_name = get_stock_name(target_ticker)
     
-    st.header(f"📊 {stock_name} ({target_ticker}) 분석")
+    st.header(f"📊 {stock_name}")
+    st.caption(f"Ticker: {target_ticker}")
     
     with st.spinner(f"{stock_name} 데이터 분석 중..."):
         # Fetch Data
