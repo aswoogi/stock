@@ -1,17 +1,370 @@
 import streamlit as st
-import sys
-import os
-
-# Add current directory to path to ensure imports work in deployment
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from utils.data_loader import get_ticker_data, get_market_indices, get_stock_name
-from utils.indicators import calculate_indicators, find_support_resistance
-from utils.predictor import predict_direction
+import yfinance as yf
 import datetime
+
+# --- MODULES MERGED FOR DEPLOYMENT ---
+
+# 1. DATA LOADER
+def get_ticker_data(ticker: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
+    """
+    Fetches historical data for a given ticker.
+    Args:
+        ticker (str): Stock ticker symbol (e.g., 'AAPL', '005930.KS').
+        period (str): Data period to download (default '2y' to ensure enough data for indicators).
+        interval (str): Data interval (default '1d').
+    Returns:
+        pd.DataFrame: Dataframe with 'Open', 'High', 'Low', 'Close', 'Volume'.
+    """
+    try:
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        if df.empty:
+            return pd.DataFrame()
+        # Ensure MultiIndex columns are handled if present (yfinance update quirk)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df
+    except Exception as e:
+        print(f"Error fetching data for {ticker}: {e}")
+        return pd.DataFrame()
+
+def get_stock_name(ticker: str) -> str:
+    """
+    Fetches the full name of the stock.
+    """
+    try:
+        t = yf.Ticker(ticker)
+        # Fast access to info is sometimes slow or limited, but .info usually works.
+        # Alternatively, use a static mapping or search, but yfinance is best here.
+        info = t.info
+        return info.get('longName') or info.get('shortName') or ticker
+    except Exception as e:
+        print(f"Error fetching info for {ticker}: {e}")
+        return ticker
+
+def get_market_indices() -> dict:
+    """
+    Fetches key market indices and rates.
+    Returns:
+        dict: Dictionary containing current price and daily change for each index.
+    """
+    indices = {
+        "S&P 500": "^GSPC",
+        "나스닥 (NASDAQ)": "^IXIC",
+        "코스피 (KOSPI)": "^KS11",
+        "달러/원 (USD/KRW)": "KRW=X",
+        "달러 인덱스": "DX-Y.NYB"
+    }
+    
+    data = {}
+    tickers = list(indices.values())
+    
+    try:
+        df = yf.download(tickers, period="5d", progress=False)
+        
+        # yfinance returns MultiIndex (Price, Ticker)
+        # We need 'Close' for prices.
+        closes = df['Close']
+        
+        for name, ticker in indices.items():
+            if ticker in closes.columns:
+                series = closes[ticker].dropna()
+                if len(series) >= 2:
+                    current = series.iloc[-1]
+                    prev = series.iloc[-2]
+                    change = ((current - prev) / prev) * 100
+                    data[name] = {
+                        "current": current,
+                        "change": change
+                    }
+                elif len(series) == 1:
+                     data[name] = {
+                        "current": series.iloc[-1],
+                        "change": 0.0
+                    }
+    except Exception as e:
+        print(f"Error fetching market indices: {e}")
+        
+    return data
+
+# 2. INDICATORS
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates technical indicators for the dataframe using pure Pandas.
+    Args:
+        df: Dataframe with OHLCV data.
+    Returns:
+        df: Dataframe with added indicator columns.
+    """
+    if df.empty:
+        return df
+    
+    # 1. RSI (14)
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # 2. MACD (12, 26, 9)
+    exp12 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = exp12 - exp26
+    df['MACD_SIGNAL'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_HIST'] = df['MACD'] - df['MACD_SIGNAL']
+
+    # 3. Relative Volume
+    # Compare current volume to 20-day simple moving average volume
+    df['Vol_SMA_20'] = df['Volume'].rolling(window=20).mean()
+    df['Relative_Vol'] = df['Volume'] / df['Vol_SMA_20']
+
+    # 4. ADR (Average Daily Range) - 14 days
+    df['Daily_Range'] = df['High'] - df['Low']
+    df['ADR'] = df['Daily_Range'].rolling(window=14).mean()
+    df['ADR_Percent'] = (df['ADR'] / df['Close']) * 100
+
+    # 5. Supertrend (10, 3)
+    # TR = Max(High - Low, abs(High - PrevClose), abs(Low - PrevClose))
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    prev_close = close.shift(1)
+    
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/10, adjust=False).mean() # ATR 10
+    
+    multiplier = 3
+    final_upperband = (high + low) / 2 + (multiplier * atr)
+    final_lowerband = (high + low) / 2 - (multiplier * atr)
+    
+    # Initialize Supertrend columns
+    supertrend = pd.Series(0.0, index=df.index)
+    supertrend_dir = pd.Series(1, index=df.index) # 1 for up, -1 for down
+    
+    # Convert to numpy arrays for speed
+    close_arr = close.values
+    fu_arr = final_upperband.values
+    fl_arr = final_lowerband.values
+    st_arr = np.zeros(len(df))
+    dir_arr = np.zeros(len(df))
+    
+    # Initial values
+    st_arr[0] = fl_arr[0]
+    dir_arr[0] = 1
+    
+    # Variables for recursive state
+    prev_fu = fu_arr[0]
+    prev_fl = fl_arr[0]
+    prev_st = st_arr[0]
+    prev_dir = 1
+    
+    for i in range(1, len(df)):
+        curr_close = close_arr[i]
+        curr_prev_close = close_arr[i-1]
+        
+        # Calculate Basic Bands
+        curr_fu = fu_arr[i]
+        curr_fl = fl_arr[i]
+        
+        # Calculate Final Bands regarding previous bands
+        if (curr_fu < prev_fu) or (curr_prev_close > prev_fu):
+            effective_fu = curr_fu
+        else:
+            effective_fu = prev_fu
+            
+        if (curr_fl > prev_fl) or (curr_prev_close < prev_fl):
+            effective_fl = curr_fl
+        else:
+            effective_fl = prev_fl
+            
+        # Determine Direction and Value
+        if prev_st == prev_fu: # Previous was downtrend
+            if curr_close > effective_fu:
+                current_st = effective_fl
+                current_dir = 1 # Change to Uptrend
+            else:
+                current_st = effective_fu
+                current_dir = -1 # Stay Downtrend
+        else: # Previous was uptrend (prev_st == prev_fl)
+            if curr_close < effective_fl:
+                current_st = effective_fu
+                current_dir = -1 # Change to Downtrend
+            else:
+                current_st = effective_fl
+                current_dir = 1 # Stay Uptrend
+                
+        st_arr[i] = current_st
+        dir_arr[i] = current_dir
+        
+        # Update previous state
+        prev_fu = effective_fu
+        prev_fl = effective_fl
+        prev_st = current_st
+    
+    df['Supertrend'] = st_arr
+    df['Supertrend_Direction'] = dir_arr
+
+    # 6. Williams %R (14)
+    # Formula: (Highest High - Close) / (Highest High - Lowest Low) * -100
+    # Range: 0 to -100
+    highest_high = df['High'].rolling(window=14).max()
+    lowest_low = df['Low'].rolling(window=14).min()
+    df['Williams_%R'] = ((highest_high - df['Close']) / (highest_high - lowest_low)) * -100
+
+    return df
+
+def find_support_resistance(df: pd.DataFrame, window=20) -> tuple[list, list]:
+    """Identifies support and resistance levels using local mins and maxs."""
+    supports = []
+    resistances = []
+    
+    recent_data = df.tail(300) 
+    if recent_data.empty:
+        return [], []
+
+    # Identify local maxima
+    local_max = recent_data['High'].rolling(window=window*2+1, center=True).max()
+    peaks = recent_data[recent_data['High'] == local_max]['High']
+    resistances = peaks.tolist()
+    
+    # Identify local minima
+    local_min = recent_data['Low'].rolling(window=window*2+1, center=True).min()
+    valleys = recent_data[recent_data['Low'] == local_min]['Low']
+    supports = valleys.tolist()
+            
+    return consolidate_levels(supports), consolidate_levels(resistances)
+
+def consolidate_levels(levels, threshold=0.02):
+    """Merges levels that are within threshold % of each other."""
+    if not levels:
+        return []
+        
+    levels.sort()
+    merged = []
+    current_group = [levels[0]]
+    
+    for level in levels[1:]:
+        if (level - current_group[-1]) / current_group[-1] <= threshold:
+            current_group.append(level)
+        else:
+            merged.append(sum(current_group) / len(current_group))
+            current_group = [level]
+    merged.append(sum(current_group) / len(current_group))
+    
+    return merged
+
+# 3. PREDICTOR
+def predict_direction(df: pd.DataFrame, supports: list, resistances: list) -> dict:
+    """Analyzes the latest data to predict direction."""
+    if df.empty:
+        return {"signal": "Error", "summary": "No data available", "details": []}
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    score = 0
+    details = []
+    
+    # 1. Supertrend (Trend)
+    if 'Supertrend_Direction' in df.columns:
+        if latest['Supertrend_Direction'] == 1:
+            score += 2
+            details.append("📈 **슈퍼트렌드 상승 (Bullish)**: 현재 주가가 상승 추세 위에 있습니다. 전반적인 매수 심리가 살아있는 상태입니다.")
+        else:
+            score -= 2
+            details.append("📉 **슈퍼트렌드 하락 (Bearish)**: 현재 주가가 하락 추세 아래에 있습니다. 매도 압력이 강한 상태이니 주의가 필요합니다.")
+
+    # 2. RSI (Momentum)
+    rsi = latest['RSI']
+    if rsi < 30:
+        score += 2
+        details.append(f"🟢 **RSI 과매도 ({rsi:.2f})**: 단기간에 주가가 과도하게 하락했습니다. 기술적 반등(데드캣 바운스)이 나올 가능성이 높습니다.")
+    elif rsi > 70:
+        score -= 2
+        details.append(f"🔴 **RSI 과매수 ({rsi:.2f})**: 단기간에 주가가 과도하게 상승했습니다. 차익 실현 매물로 인한 조정 가능성이 있습니다.")
+    elif 50 <= rsi < 70:
+        score += 1
+        details.append(f"🔼 **RSI 상승세 ({rsi:.2f})**: 매수 세력이 우세하며 추가 상승 여력이 있어 보입니다.")
+    else:
+        score -= 1
+        details.append(f"🔽 **RSI 하락세 ({rsi:.2f})**: 매도 세력이 우세하거나 모멘텀이 약해지고 있습니다.")
+        
+    # 3. MACD (Momentum/Trend)
+    if 'MACD_HIST' in df.columns:
+        hist = latest['MACD_HIST']
+        prev_hist = prev['MACD_HIST']
+        
+        if hist > 0:
+            score += 1
+            if prev_hist < 0:
+                score += 2 # Golden Cross signal
+                details.append("✨ **MACD 골든크로스**: 단기 이동평균선이 장기를 뚫고 올라갔습니다. 강력한 매수 신호 중 하나입니다.")
+            else:
+                details.append("👍 **MACD 양수**: 상승 모멘텀이 유지되고 있습니다.")
+        else:
+            score -= 1
+            if prev_hist > 0:
+                score -= 2 # Death Cross signal
+                details.append("💀 **MACD 데드크로스**: 단기 이동평균선이 장기 아래로 떨어졌습니다. 하락 추세 전환 신호일 수 있습니다.")
+            else:
+                details.append("👎 **MACD 음수**: 하락 모멘텀이 지속되고 있습니다.")
+
+    # 4. Support/Resistance (Price Action) - High Weight
+    close = latest['Close']
+    nearest_support = max([s for s in supports if s < close], default=0)
+    nearest_resistance = min([r for r in resistances if r > close], default=float('inf'))
+    
+    # Check proximity (within 1.5% for more sensitivity)
+    if nearest_support > 0 and (close - nearest_support) / close < 0.015:
+        score += 3 # Increased weight from 2 to 3
+        details.append(f"🛡️ **지지선 근접 (약 {nearest_support:,.0f}원/달러)**: 바닥을 다지고 반등할 수 있는 가격대입니다. 매수하기 좋은 위치일 수 있습니다.")
+    
+    if nearest_resistance != float('inf') and (nearest_resistance - close) / close < 0.015:
+        score -= 3 # Increased weight from 2 to 3
+        details.append(f"🧱 **저항선 근접 (약 {nearest_resistance:,.0f}원/달러)**: 이 가격대에서 매도 물량이 쏟아져 상승이 막힐 수 있습니다. 돌파 여부를 잘 지켜봐야 합니다.")
+
+    # 5. Williams %R (Momentum)
+    # Overbought: > -20, Oversold: < -80
+    if 'Williams_%R' in df.columns:
+        wr = latest['Williams_%R']
+        if wr > -20:
+            score -= 2
+            details.append(f"🔥 **Williams %R 과매수 ({wr:.2f})**: 매수세가 너무 강해 과열권에 진입했습니다. 조만간 조정이 올 수 있습니다.")
+        elif wr < -80:
+            score += 2
+            details.append(f"💧 **Williams %R 과매도 ({wr:.2f})**: 공포감에 의한 투매가 나왔을 수 있습니다. 저점 매수의 기회일 수 있습니다.")
+        else:
+            # Neutral zone, mild trend follow?
+            pass
+
+    # Interpret Score
+    # Range roughly -12 to +12
+    # Adjusted thresholds slightly for more signals
+    if score >= 6:
+        signal = "강력 매수 (Strong Buy)"
+    elif score >= 2:
+        signal = "매수 (Buy)"
+    elif score <= -5:
+        signal = "강력 매도 (Strong Sell)"
+    elif score <= -2:
+        signal = "매도 (Sell)"
+    else:
+        signal = "중립 (Neutral)"
+        
+    return {
+        "score": score,
+        "signal": signal,
+        "summary": f"종합 점수: {score}점. 전반적인 기술적 전망은 '{signal}' 입니다.",
+        "details": details
+    }
+
+# --- MAIN APPLICATION ---
 
 # Page configuration
 st.set_page_config(layout="wide", page_title="주식 예측 AI", page_icon="📈")
