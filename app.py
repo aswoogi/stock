@@ -619,14 +619,27 @@ st.sidebar.markdown("---")
 font_size_scale = st.sidebar.slider("글자 크기 조절 (Font Size)", 0.5, 1.5, 1.0, 0.1)
 
 # Dynamic CSS injection for font size
+# Base size: 10pt is approx 13.3px. Assuming 1rem = 16px, 10pt = ~0.8rem
+# We apply this to metrics.
 st.markdown(f"""
 <style>
-    .stMetricLabel {{ font-size: {0.8 * font_size_scale}rem !important; }}
-    .stMetricValue {{ font-size: {1.0 * font_size_scale}rem !important; }}
+    /* Force override Key Metrics */
+    div[data-testid="stMetricValue"] > div {{
+        font-size: {0.8 * font_size_scale}rem !important;
+    }}
+    div[data-testid="stMetricLabel"] > label {{
+        font-size: {0.7 * font_size_scale}rem !important;
+    }}
+    
+    /* Also adjust table text if needed, but primarily metrics */
     
     @media (max-width: 600px) {{
-        .stMetricLabel {{ font-size: {0.6 * font_size_scale}rem !important; }}
-        .stMetricValue {{ font-size: {0.7 * font_size_scale}rem !important; }}
+        div[data-testid="stMetricValue"] > div {{
+            font-size: {0.7 * font_size_scale}rem !important;
+        }}
+        div[data-testid="stMetricLabel"] > label {{
+            font-size: {0.6 * font_size_scale}rem !important;
+        }}
     }}
 </style>
 """, unsafe_allow_html=True)
