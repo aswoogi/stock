@@ -480,11 +480,17 @@ st.markdown("---")
 
 # --- Sidebar Inputs ---
 st.sidebar.header("데이터 설정")
-st.sidebar.markdown("""
-**💡 한국 주식 입력 팁:**
-- 코스피: 종목코드.KS (예: `005930.KS`)
-- 코스닥: 종목코드.KQ (예: `091990.KQ`)
-""")
+# --- Sidebar Inputs ---
+st.sidebar.header("데이터 설정")
+
+# Market Selection for easy input
+market_type = st.sidebar.radio(
+    "시장 선택",
+    ("🇺🇸 미국 (US)", "🇰🇷 한국 (KR)"),
+    horizontal=True,
+    help="한국 주식은 종목코드(숫자)만 입력하세요."
+)
+
 
 # Watchlist Management
 # Watchlist Management - Local Import/Export
@@ -553,22 +559,58 @@ if st.sidebar.button("🚀 일괄 분석 실행 (Batch Analysis)"):
     st.sidebar.success("분석 완료!")
 
 # Add to Watchlist
-new_ticker = st.sidebar.text_input("종목 추가", placeholder="예: BTC-USD")
+new_ticker_input = st.sidebar.text_input("종목 추가", placeholder="예: AAPL 또는 005930")
 
 if st.sidebar.button("추가"):
-    if new_ticker:
+    if new_ticker_input:
+        final_ticker = new_ticker_input.strip().upper()
+        
+        # Logic to handle Korean stocks automatically
+        if "한국" in market_type:
+            # If user entered digits only, we assume it's a code
+            if final_ticker.isdigit():
+                # Try KOSPI first
+                test_ticker = f"{final_ticker}.KS"
+                
+                # We need to verify if it exists. 
+                # Smart heuristic: check if we can get a name.
+                # get_stock_name returns the ticker itself if it fails/error
+                
+                with st.spinner("종목 확인 중... (KOSPI/KOSDAQ)"):
+                    name_check = get_stock_name(test_ticker)
+                    
+                    if name_check != test_ticker:
+                        final_ticker = test_ticker
+                    else:
+                        # Try KOSDAQ
+                        test_ticker_bq = f"{final_ticker}.KQ"
+                        name_check_bq = get_stock_name(test_ticker_bq)
+                        if name_check_bq != test_ticker_bq:
+                            final_ticker = test_ticker_bq
+                        else:
+                            # Both failed, default to KS or keep as is? 
+                            # Let's default to KS so they see the error if it persists
+                            final_ticker = f"{final_ticker}.KS"
+            
         # Check integrity
-        exists = any(item['ticker'] == new_ticker for item in st.session_state.watchlist)
+        exists = any(item['ticker'] == final_ticker for item in st.session_state.watchlist)
         if not exists:
-            # Fetch name first
+            # Fetch name
             with st.spinner("종목 정보 확인 중..."):
-                fetched_name = get_stock_name(new_ticker)
-                st.session_state.watchlist.append({"ticker": new_ticker, "name": fetched_name})
-                # save_watchlist removed
+                fetched_name = get_stock_name(final_ticker)
+                
+                # If name is same as ticker, it might be invalid, but we add it anyway 
+                # or warn? User might want to track weird things.
+                # But for a cleaner experience:
+                if fetched_name == final_ticker:
+                   st.toast(f"⚠️ '{final_ticker}' 정보를 찾을 수 없습니다. 티커를 확인해주세요.")
+                
+                st.session_state.watchlist.append({"ticker": final_ticker, "name": fetched_name})
                 st.rerun()
 
         else:
             st.warning("이미 목록에 있는 종목입니다.")
+
 
 # Whatchlist Items
 st.sidebar.markdown("---")
