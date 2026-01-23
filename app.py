@@ -34,16 +34,54 @@ def get_ticker_data(ticker: str, period: str = "2y", interval: str = "1d") -> pd
 def get_stock_name(ticker: str) -> str:
     """
     Fetches the full name of the stock.
+    For Korean stocks (.KS, .KQ), uses Naver Finance to get the Korean name.
     """
     try:
+        # 1. Custom handling for Korean stocks to get Hangul Name
+        if ticker.endswith(".KS") or ticker.endswith(".KQ"):
+            try:
+                code = ticker.split(".")[0]
+                url = f"https://finance.naver.com/item/main.naver?code={code}"
+                
+                import requests
+                import re
+                
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                r = requests.get(url, headers=headers, timeout=10)
+                
+                # Naver Finance often sends CP949 even when headers say UTF-8
+                try:
+                    html_content = r.content.decode('cp949')
+                except:
+                    html_content = r.text
+                
+                # Pattern 1: Extract from title tag "삼성전자 : 네이버 페이 증권"
+                match = re.search(r'<title>(.*?) : .*?</title>', html_content)
+                if match:
+                    stock_name = match.group(1).strip()
+                    if stock_name and not stock_name.startswith('\ufffd'):
+                        return stock_name
+                
+                # Pattern 2: Global title fallback
+                match = re.search(r'<title>(.*?)</title>', html_content)
+                if match:
+                    full_title = match.group(1)
+                    stock_name = full_title.split(':')[0].strip()
+                    if stock_name and not stock_name.startswith('\ufffd'):
+                        return stock_name
+                        
+            except Exception as e:
+                print(f"Error fetching Korean stock name from Naver: {e}")
+                pass # Fallback to yfinance if Naver fails
+
         t = yf.Ticker(ticker)
-        # Fast access to info is sometimes slow or limited, but .info usually works.
-        # Alternatively, use a static mapping or search, but yfinance is best here.
         info = t.info
         return info.get('longName') or info.get('shortName') or ticker
     except Exception as e:
         print(f"Error fetching info for {ticker}: {e}")
         return ticker
+
+
 
 def get_market_indices() -> dict:
     """
@@ -483,13 +521,9 @@ st.sidebar.header("데이터 설정")
 # --- Sidebar Inputs ---
 st.sidebar.header("데이터 설정")
 
-# Market Selection for easy input
-market_type = st.sidebar.radio(
-    "시장 선택",
-    ("🇺🇸 미국 (US)", "🇰🇷 한국 (KR)"),
-    horizontal=True,
-    help="한국 주식은 종목코드(숫자)만 입력하세요."
-)
+# Watchlist Management
+# Watchlist Management - Local Import/Export
+st.sidebar.subheader("📂 리스트 관리")
 
 
 # Watchlist Management
@@ -559,7 +593,18 @@ if st.sidebar.button("🚀 일괄 분석 실행 (Batch Analysis)"):
     st.sidebar.success("분석 완료!")
 
 # Add to Watchlist
-new_ticker_input = st.sidebar.text_input("종목 추가", placeholder="예: AAPL 또는 005930")
+st.sidebar.markdown("### 종목 추가")
+
+# Market Selection moved here
+market_type = st.sidebar.radio(
+    "시장 선택",
+    ("🇺🇸 미국 (US)", "🇰🇷 한국 (KR)"),
+    horizontal=True,
+    help="한국 주식은 종목코드(숫자)만 입력하세요."
+)
+
+new_ticker_input = st.sidebar.text_input("종목 코드/티커", placeholder="예: AAPL 또는 005930")
+
 
 if st.sidebar.button("추가"):
     if new_ticker_input:
