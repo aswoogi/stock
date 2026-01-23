@@ -385,12 +385,8 @@ def load_watchlist():
         {"ticker": "NVDA", "name": "NVIDIA Corp."}
     ]
 
-def save_watchlist(watchlist):
-    try:
-        with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(watchlist, f, ensure_ascii=False)
-    except Exception as e:
-        print(f"Error saving watchlist: {e}")
+# save_watchlist function removed for local isolation
+
 
 # --- HELPER UI FUNCTIONS ---
 def truncate_text(text, max_len=15):
@@ -434,8 +430,24 @@ st.markdown("""
         width: 100%;
         padding-left: 10px;
     }
+    
+    /* Custom colored markers for sidebar items if needed, 
+       but we will use Emojis for simplicity and robustness */
 </style>
 """, unsafe_allow_html=True)
+
+# Helper function for loading file
+def load_watchlist_from_file():
+    uploaded_file = st.session_state.get('uploaded_file_widget')
+    if uploaded_file is not None:
+        try:
+            loaded_data = json.load(uploaded_file)
+            if isinstance(loaded_data, list):
+                st.session_state.watchlist = loaded_data
+                st.toast("✅ 리스트를 성공적으로 불러왔습니다!")
+        except Exception as e:
+            st.error(f"파일 불러오기 오류: {e}")
+
 
 # Application Title
 st.title("📈 AI 주식 예측기")
@@ -443,6 +455,8 @@ st.title("📈 AI 주식 예측기")
 # --- Initialize Session State for Watchlist ---
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = load_watchlist()
+if 'batch_analysis_results' not in st.session_state:
+    st.session_state.batch_analysis_results = {}
 if 'selected_ticker' not in st.session_state:
     st.session_state.selected_ticker = st.session_state.watchlist[0]['ticker'] if st.session_state.watchlist else "005930.KS"
 
@@ -473,10 +487,74 @@ st.sidebar.markdown("""
 """)
 
 # Watchlist Management
+# Watchlist Management - Local Import/Export
+st.sidebar.subheader("📂 리스트 관리")
+
+# Download (Save to Local)
+save_name = st.sidebar.text_input("저장할 파일명", value="stock_watchlist", help=".json 확장자는 자동으로 붙습니다.")
+if not save_name.endswith(".json"):
+    save_name += ".json"
+
+watchlist_json = json.dumps(st.session_state.watchlist, ensure_ascii=False, indent=2)
+st.sidebar.download_button(
+    label="💾 리스트 내보내기 (저장)",
+    data=watchlist_json,
+    file_name=save_name,
+    mime="application/json",
+    help="현재 리스트를 내 컴퓨터에 JSON 파일로 저장합니다."
+)
+
+# Upload (Load from Local)
+# Use key and on_change callback to handle loading only when file changes
+st.sidebar.file_uploader(
+    "📂 리스트 불러오기", 
+    type=["json"], 
+    help="저장된 리스트 파일을 불러옵니다.",
+    key='uploaded_file_widget',
+    on_change=load_watchlist_from_file
+)
+
+
+st.sidebar.markdown("---")
+
 st.sidebar.subheader("📋 관심 종목")
+
+# Batch Analysis Button
+if st.sidebar.button("🚀 일괄 분석 실행 (Batch Analysis)"):
+    progress_bar = st.sidebar.progress(0)
+    total = len(st.session_state.watchlist)
+    
+    results = {}
+    for idx, item in enumerate(st.session_state.watchlist):
+        ticker = item['ticker']
+        # Fetch minimal data for speed (e.g., 6mo or enough for indicators)
+        # We need enough for Moving Averages (200 might be safest, so 1y or 2y)
+        # Reuse existing function
+        _df = get_ticker_data(ticker, period="1y") 
+        if not _df.empty:
+            _df = calculate_indicators(_df)
+            _supports, _resistances = find_support_resistance(_df)
+            _pred = predict_direction(_df, _supports, _resistances)
+            
+            # Parsing signal for color
+            sig = _pred['signal']
+            if "매수" in sig:
+                results[ticker] = "buy"
+            elif "매도" in sig:
+                results[ticker] = "sell"
+            else:
+                results[ticker] = "neutral"
+        else:
+            results[ticker] = "error"
+            
+        progress_bar.progress((idx + 1) / total)
+        
+    st.session_state.batch_analysis_results = results
+    st.sidebar.success("분석 완료!")
 
 # Add to Watchlist
 new_ticker = st.sidebar.text_input("종목 추가", placeholder="예: BTC-USD")
+
 if st.sidebar.button("추가"):
     if new_ticker:
         # Check integrity
@@ -486,8 +564,9 @@ if st.sidebar.button("추가"):
             with st.spinner("종목 정보 확인 중..."):
                 fetched_name = get_stock_name(new_ticker)
                 st.session_state.watchlist.append({"ticker": new_ticker, "name": fetched_name})
-                save_watchlist(st.session_state.watchlist)
+                # save_watchlist removed
                 st.rerun()
+
         else:
             st.warning("이미 목록에 있는 종목입니다.")
 
@@ -499,20 +578,37 @@ for item in st.session_state.watchlist:
     ticker = item['ticker']
     name = item['name']
     
+    # Determine Label with Color/Emoji based on Batch Results
+    status = st.session_state.batch_analysis_results.get(ticker)
+    
+    # User requested: Buy=Red, Sell=Blue, Neutral=Yellow
+    # We use emojis to simulate this on the button.
+    # 🔴: Buy, 🔵: Sell, 🟡: Neutral
+    
+    prefix = ""
+    if status == "buy":
+        prefix = "🔴 "
+    elif status == "sell":
+        prefix = "🔵 "
+    elif status == "neutral":
+        prefix = "🟡 "
+    
     # Truncate long names for display
     display_name = truncate_text(name, 12)
+    label = f"{prefix}{display_name}"
     
     col1, col2 = st.sidebar.columns([0.8, 0.2])
     with col1:
         # Show name on button, ticker in tooltip/help if possible, but button text is primary
-        if st.button(f"{display_name}", key=f"btn_{ticker}", help=f"{name} ({ticker})", use_container_width=True):
+        if st.button(label, key=f"btn_{ticker}", help=f"{name} ({ticker})", use_container_width=True):
             st.session_state.selected_ticker = ticker
             st.rerun()
     with col2:
         if st.button("❌", key=f"del_{ticker}"):
             st.session_state.watchlist = [i for i in st.session_state.watchlist if i['ticker'] != ticker]
-            save_watchlist(st.session_state.watchlist)
+            # save_watchlist removed
             st.rerun()
+
 
 st.sidebar.markdown("---")
 timeframe = st.sidebar.selectbox("기간", ["1y", "2y", "5y"], index=1)
