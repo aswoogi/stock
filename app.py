@@ -405,12 +405,12 @@ st.markdown("""
     /* Responsive Text Sizes */
     h1 { font-size: clamp(1.5rem, 4vw, 3rem) !important; }
     h2 { font-size: clamp(1.2rem, 3vw, 2.2rem) !important; }
-    .stMetricLabel { font-size: clamp(0.8rem, 1.5vw, 1rem) !important; }
-    .stMetricValue { font-size: clamp(1rem, 2.5vw, 1.8rem) !important; }
     
+    /* Metrics: Default sizes, will be overridden by dynamic style below */
     .metric-card {
         background-color: #1e1e1e;
-        padding: 10px;
+
+        padding: 5px; /* Reduced padding for mobile */
         border-radius: 5px;
         border: 1px solid #333;
     }
@@ -611,7 +611,26 @@ for item in st.session_state.watchlist:
 
 
 st.sidebar.markdown("---")
+st.sidebar.markdown("---")
 timeframe = st.sidebar.selectbox("기간", ["1y", "2y", "5y"], index=1)
+
+st.sidebar.markdown("---")
+# Font Size Slider
+font_size_scale = st.sidebar.slider("글자 크기 조절 (Font Size)", 0.5, 1.5, 1.0, 0.1)
+
+# Dynamic CSS injection for font size
+st.markdown(f"""
+<style>
+    .stMetricLabel {{ font-size: {0.8 * font_size_scale}rem !important; }}
+    .stMetricValue {{ font-size: {1.0 * font_size_scale}rem !important; }}
+    
+    @media (max-width: 600px) {{
+        .stMetricLabel {{ font-size: {0.6 * font_size_scale}rem !important; }}
+        .stMetricValue {{ font-size: {0.7 * font_size_scale}rem !important; }}
+    }}
+</style>
+""", unsafe_allow_html=True)
+
 
 # --- Main Analysis Area ---
 target_ticker = st.session_state.selected_ticker
