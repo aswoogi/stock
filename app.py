@@ -564,6 +564,8 @@ new_ticker_input = st.sidebar.text_input("종목 추가", placeholder="예: AAPL
 if st.sidebar.button("추가"):
     if new_ticker_input:
         final_ticker = new_ticker_input.strip().upper()
+        # Variable to store validated name if found during check
+        validated_name = None 
         
         # Logic to handle Korean stocks automatically
         if "한국" in market_type:
@@ -572,44 +574,44 @@ if st.sidebar.button("추가"):
                 # Try KOSPI first
                 test_ticker = f"{final_ticker}.KS"
                 
-                # We need to verify if it exists. 
-                # Smart heuristic: check if we can get a name.
-                # get_stock_name returns the ticker itself if it fails/error
-                
                 with st.spinner("종목 확인 중... (KOSPI/KOSDAQ)"):
                     name_check = get_stock_name(test_ticker)
                     
                     if name_check != test_ticker:
                         final_ticker = test_ticker
+                        validated_name = name_check
                     else:
                         # Try KOSDAQ
                         test_ticker_bq = f"{final_ticker}.KQ"
                         name_check_bq = get_stock_name(test_ticker_bq)
                         if name_check_bq != test_ticker_bq:
                             final_ticker = test_ticker_bq
+                            validated_name = name_check_bq
                         else:
-                            # Both failed, default to KS or keep as is? 
-                            # Let's default to KS so they see the error if it persists
+                            # Both failed, default to KS
                             final_ticker = f"{final_ticker}.KS"
+                            # validated_name remains None, will try again below or fail
             
         # Check integrity
         exists = any(item['ticker'] == final_ticker for item in st.session_state.watchlist)
         if not exists:
-            # Fetch name
-            with st.spinner("종목 정보 확인 중..."):
-                fetched_name = get_stock_name(final_ticker)
+            # Fetch name if we haven't already
+            if validated_name:
+                fetched_name = validated_name
+            else:
+                with st.spinner("종목 정보 확인 중..."):
+                    fetched_name = get_stock_name(final_ticker)
                 
-                # If name is same as ticker, it might be invalid, but we add it anyway 
-                # or warn? User might want to track weird things.
-                # But for a cleaner experience:
-                if fetched_name == final_ticker:
-                   st.toast(f"⚠️ '{final_ticker}' 정보를 찾을 수 없습니다. 티커를 확인해주세요.")
-                
-                st.session_state.watchlist.append({"ticker": final_ticker, "name": fetched_name})
-                st.rerun()
+            # If name is same as ticker, it might be invalid
+            if fetched_name == final_ticker:
+               st.toast(f"⚠️ '{final_ticker}' 이름을 가져오지 못했습니다. 티커로 표시됩니다.")
+            
+            st.session_state.watchlist.append({"ticker": final_ticker, "name": fetched_name})
+            st.rerun()
 
         else:
             st.warning("이미 목록에 있는 종목입니다.")
+
 
 
 # Whatchlist Items
