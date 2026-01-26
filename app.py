@@ -9,7 +9,7 @@ import datetime
 # --- MODULES MERGED FOR DEPLOYMENT ---
 
 # 1. DATA LOADER
-def get_ticker_data(ticker: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
+def get_ticker_data(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     """
     Fetches historical data for a given ticker.
     Args:
@@ -99,9 +99,16 @@ def get_market_indices() -> dict:
     
     data = {}
     tickers = list(indices.values())
+    timestamp_str = "N/A"
     
     try:
         df = yf.download(tickers, period="5d", progress=False)
+        
+        if not df.empty:
+            # Get the latest timestamp from the index
+            latest_dt = df.index[-1]
+            # Convert to string format
+            timestamp_str = latest_dt.strftime("%Y-%m-%d %H:%M")
         
         # yfinance returns MultiIndex (Price, Ticker)
         # We need 'Close' for prices.
@@ -126,7 +133,7 @@ def get_market_indices() -> dict:
     except Exception as e:
         print(f"Error fetching market indices: {e}")
         
-    return data
+    return data, timestamp_str
 
 # 2. INDICATORS
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -500,9 +507,10 @@ if 'selected_ticker' not in st.session_state:
 
 # --- 1. Market Overview Header ---
 st.subheader("🌍 시장 현황")
-market_indices = get_market_indices()
+market_indices, market_time = get_market_indices()
 
 if market_indices:
+    st.caption(f"🕒 기준 시간: {market_time}")
     cols = st.columns(len(market_indices))
     for i, (name, data) in enumerate(market_indices.items()):
         with cols[i]:
@@ -517,16 +525,9 @@ else:
 st.markdown("---")
 
 # --- Sidebar Inputs ---
-st.sidebar.header("데이터 설정")
 # --- Sidebar Inputs ---
 st.sidebar.header("데이터 설정")
 
-# Watchlist Management
-# Watchlist Management - Local Import/Export
-st.sidebar.subheader("📂 리스트 관리")
-
-
-# Watchlist Management
 # Watchlist Management - Local Import/Export
 st.sidebar.subheader("📂 리스트 관리")
 
@@ -603,11 +604,11 @@ market_type = st.sidebar.radio(
     help="한국 주식은 종목코드(숫자)만 입력하세요."
 )
 
-new_ticker_input = st.sidebar.text_input("종목 코드/티커", placeholder="예: AAPL 또는 005930")
+with st.sidebar.form(key="add_stock_form", clear_on_submit=True):
+    new_ticker_input = st.text_input("종목 코드/티커", placeholder="예: AAPL 또는 005930")
+    submitted = st.form_submit_button("추가")
 
-
-if st.sidebar.button("추가"):
-    if new_ticker_input:
+    if submitted and new_ticker_input:
         final_ticker = new_ticker_input.strip().upper()
         # Variable to store validated name if found during check
         validated_name = None 
@@ -635,23 +636,23 @@ if st.sidebar.button("추가"):
                         else:
                             # Both failed, default to KS
                             final_ticker = f"{final_ticker}.KS"
-                            # validated_name remains None, will try again below or fail
             
         # Check integrity
         exists = any(item['ticker'] == final_ticker for item in st.session_state.watchlist)
         if not exists:
             # Fetch name if we haven't already
-            if validated_name:
+            if validated_name is not None:
                 fetched_name = validated_name
             else:
-                with st.spinner("종목 정보 확인 중..."):
+                with st.spinner(f"'{final_ticker}' 종목 정보 확인 중..."):
                     fetched_name = get_stock_name(final_ticker)
                 
-            # If name is same as ticker, it might be invalid
+            # If name is same as ticker, it's a fallback
             if fetched_name == final_ticker:
                st.toast(f"⚠️ '{final_ticker}' 이름을 가져오지 못했습니다. 티커로 표시됩니다.")
             
             st.session_state.watchlist.append({"ticker": final_ticker, "name": fetched_name})
+            st.success(f"✅ {fetched_name} 추가 완료!")
             st.rerun()
 
         else:
@@ -701,7 +702,7 @@ for item in st.session_state.watchlist:
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("---")
-timeframe = st.sidebar.selectbox("기간", ["1y", "2y", "5y"], index=1)
+timeframe = st.sidebar.selectbox("기간", ["1y", "2y", "5y"], index=0)
 
 st.sidebar.markdown("---")
 # Font Size Slider
@@ -739,12 +740,11 @@ target_ticker = st.session_state.selected_ticker
 
 if target_ticker:
     # Fetch Name (Double check or use saved)
-    # We can rely on get_stock_name since valid watchlist items have names, 
-    # but selected_ticker works with the name fetcher anyway.
     stock_name = get_stock_name(target_ticker)
     
-    st.header(f"📊 {stock_name}")
-    st.caption(f"Ticker: {target_ticker}")
+    # Placeholders for dynamic header
+    header_placeholder = st.empty()
+    caption_placeholder = st.empty()
     
     with st.spinner(f"{stock_name} 데이터 분석 중..."):
         # Fetch Data
@@ -753,6 +753,13 @@ if target_ticker:
         if df.empty:
             st.error(f"데이터를 가져올 수 없습니다: {target_ticker}. 종목 코드를 확인해주세요.")
         else:
+            # Get latest price and time
+            latest_price = df['Close'].iloc[-1]
+            latest_time = df.index[-1].strftime("%Y-%m-%d %H:%M")
+            
+            # Update Header with Price
+            header_placeholder.header(f"📊 {stock_name} ({latest_price:,.0f})")
+            caption_placeholder.caption(f"Ticker: {target_ticker} | 🕒 기준 시간: {latest_time}")
             # Calculate Indicators
             df = calculate_indicators(df)
             

@@ -1,7 +1,7 @@
 import yfinance as yf
 import pandas as pd
 
-def get_ticker_data(ticker: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
+def get_ticker_data(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     """
     Fetches historical data for a given ticker.
     Args:
@@ -53,12 +53,19 @@ def get_market_indices() -> dict:
     
     data = {}
     tickers = list(indices.values())
+    timestamp_str = "N/A"
     
     # Batch download might be faster, but let's do individual for error isolation first or batch if stable.
     # Batch is better for performance.
     try:
         df = yf.download(tickers, period="5d", progress=False)
         
+        if not df.empty:
+            # Get the latest timestamp from the index
+            latest_dt = df.index[-1]
+            # Convert to string format
+            timestamp_str = latest_dt.strftime("%Y-%m-%d %H:%M")
+            
         # yfinance returns MultiIndex (Price, Ticker)
         # We need 'Close' for prices.
         closes = df['Close']
@@ -82,4 +89,4 @@ def get_market_indices() -> dict:
     except Exception as e:
         print(f"Error fetching market indices: {e}")
         
-    return data
+    return data, timestamp_str
